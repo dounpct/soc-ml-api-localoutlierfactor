@@ -1,0 +1,119 @@
+MLFLOW_MINIO_FOLDER=env.MLFLOW_MINIO_FOLDER
+MLFLOW_TRAINING_FILE_LIMIT=env.MLFLOW_TRAINING_FILE_LIMIT
+
+pipeline 
+{
+    agent 
+    {
+        node 
+        {
+            label "jenkins-python"
+        }       
+    }
+
+    environment {
+        MLFLOW_TRACKING_USERNAME = credentials('MLFLOW_USER')
+        MLFLOW_TRACKING_PASSWORD = credentials('MLFLOW_PASSWORD')
+    }
+    
+    stages
+    {
+        
+        stage('PrePare ENV') 
+        { 
+            steps 
+            {
+                script 
+                {
+                    container("python") 
+                    {
+                        sh "python --version"            
+                        sh "pip install -r requirements.txt"                                                                                                 
+                    }
+                }
+            }
+        }         
+        stage('PrePare DataSet') 
+        { 
+            steps 
+            {
+                script 
+                {
+                    container("minio-mc") 
+                    {
+                        sh "mc -v"
+                        withCredentials([usernamePassword(credentialsId: 'ADS_AWS_CREDENTIAL', passwordVariable: 'password', usernameVariable: 'username')])     
+                        {
+                            sh "mc alias set myminio https://minio.rtarf-prod.its-software-services.com/ ${username} ${password}"
+                            sh "mkdir rawdata"
+                            sh "mkdir images"
+                            
+                            cmd = """mc ls myminio/rtarf-ml/${MLFLOW_MINIO_FOLDER}/ --json | jq .key | sed 's/"//g'"""
+                            listFile = sh(script: cmd, returnStdout: true)
+
+                            def lines = listFile.split('\n')
+                            def i = 0
+                            def limit = MLFLOW_TRAINING_FILE_LIMIT.trim().toInteger()
+                            for (String line: lines)
+                            {   
+                                i++
+                                sh "mc cp myminio/rtarf-ml/${MLFLOW_MINIO_FOLDER}/${line} ./rawdata/"
+                                if (i >= limit)
+                                {
+                                    break
+                                }
+                            }
+
+                            // sh "mc cp --recursive  myminio/rtarf-ml/${MLFLOW_MINIO_FOLDER}/ ./rawdata/"
+                            sh "ls -alrt ./rawdata/"
+                            
+                            cmd = "ls ./rawdata/ | wc -l"
+                            countFile = sh(script: cmd, returnStdout: true)
+                            println("countFile: ${countFile}")
+                            currentBuild.description = "folder:${MLFLOW_MINIO_FOLDER}/${MLFLOW_TRAINING_FILE_LIMIT}/${countFile}"
+                        }                                                                            
+                    }
+                }
+            }
+        }         
+        stage('Training Model ADS-ANOMALY-DEST-COUNTRY-PORT') 
+        { 
+            steps 
+            {
+                script 
+                {
+                    container("python") 
+                    {
+                        sh "python -u train-ads-anomaly-dest-country-port.py ${env.BUILD_URL}console ${MLFLOW_MINIO_FOLDER} ${MLFLOW_TRAINING_FILE_LIMIT} ${env.BUILD_ID}"
+                    }
+                    container("minio-mc") 
+                    {
+                        withCredentials([usernamePassword(credentialsId: 'AWS_CREDENTIAL', passwordVariable: 'password', usernameVariable: 'username')])     
+                        {
+                            sh "mc alias set ml-minio https://minio-api.rtarf-ml.its-software-services.com/ ${username} ${password}"
+                            
+                            sh "mc cp --recursive images/ ml-minio/ml-report/train-ads-anomaly-dest-country-port/${env.BUILD_ID}/"
+                            
+                            sh "mc cp report.html ml-minio/ml-report/train-ads-anomaly-dest-country-port/${env.BUILD_ID}/"
+
+                            println("report : https://minio-api.rtarf-ml.its-software-services.com/ml-report/train-ads-anomaly-dest-country-port/${env.BUILD_ID}/report.html")
+                        }
+                    }
+                }
+            }
+        }         
+    }
+}
+
+
+def deleteFolder(def path)
+{
+    try
+    {
+        sh(script: "rm -rf ${path}")
+    }
+    catch (Exception e)
+    {
+        println("Can not delete ${path}")
+    }
+}

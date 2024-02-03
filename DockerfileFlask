@@ -1,0 +1,19 @@
+FROM python:3.9
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=UTF-8
+
+# Create app directory
+WORKDIR /app
+
+# Install app dependencies
+COPY requirements-flask.txt ./
+
+RUN pip install -r requirements-flask.txt
+
+# Bundle app source
+COPY server.py ./
+COPY sharelib.py ./
+
+EXPOSE 5000
+CMD ["python", "server.py"]
